@@ -1,0 +1,4 @@
+assets/
+.cache/
+__pycache__/
+*.pyc
