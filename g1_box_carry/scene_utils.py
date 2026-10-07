@@ -7,7 +7,7 @@ import os
 
 import numpy as np
 
-import nav_planning as nav
+from g1_box_carry import nav_planning as nav
 
 
 def collision_off_layer(scene_path, cache_dir, patterns):

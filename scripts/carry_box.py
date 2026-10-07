@@ -11,17 +11,17 @@ scripted and uses ground-truth simulator state (robot pose, box pose, scene geom
 occupancy grid, straight-line walking, alignment at the table, grasp, repositioning and re-grasp, lift,
 transport, placement on the second table, and release.
 
-Usage:
-    python carry_box.py --scene lab
-    python carry_box.py --scene warehouse
+Usage (from the repository root):
+    python scripts/carry_box.py --scene lab
+    python scripts/carry_box.py --scene warehouse
 """
 import argparse, json, math, os, sys, time
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # repository root
 sys.path.insert(0, HERE)
 
-import nav_planning as nav
-from scene_utils import collision_off_layer, occupancy_grid, rigid_prop_layer
+from g1_box_carry import nav_planning as nav
+from g1_box_carry.scene_utils import collision_off_layer, occupancy_grid, rigid_prop_layer
 
 WAREHOUSE = "physical_ai_simready_warehouse_01.usd"
 BOX = "Props/general/sm_cubebox_b04_brown_01/sm_cubebox_b04_brown_01_physics.usd"
@@ -52,11 +52,16 @@ TABLE_TOP = 0.694     # table surface height
 # The box starts at that edge, since the table frame limits how close the robot can stand.
 BOX_AHEAD = 0.15 + HALF + 0.015
 TURN_RATE = 1.3       # yaw-rate command (rad/s); rates below ~1.1 rad/s are not tracked at standstill
+# The arm IK also controls the waist, so a wrist target the arms cannot reach bends the waist instead (up to its
+# 30 deg roll limit, leaning the torso sideways). These targets are reachable with the waist upright.
+PARK = (0.14, 0.20, 0.12)  # wrist position (forward, left, up) while approaching and leaving a table
+RELEASE_OUT = 0.08          # outward wrist motion after releasing the box
+LEVEL_GAIN = 0.02           # carry: wrist pitch correction per control step, as a fraction of the box tilt
 
 ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
 ap.add_argument("--scene", choices=sorted(LAYOUTS), default="lab")
 ap.add_argument("--assets", default=os.path.join(HERE, "assets", "simready_warehouse"),
-                help="NVIDIA PhysicalAI-SimReady-Warehouse-01 directory (see fetch_assets.sh)")
+                help="NVIDIA PhysicalAI-SimReady-Warehouse-01 directory (see scripts/fetch_assets.sh)")
 ap.add_argument("--headless", action="store_true")
 args = ap.parse_args()
 L = LAYOUTS[args.scene]
@@ -76,7 +81,7 @@ from isaaclab.assets import AssetBaseCfg
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import parse_env_cfg
 
-from g1_hands import inspire_targets, use_inspire_hands
+from g1_box_carry.g1_hands import inspire_targets, use_inspire_hands
 
 # Isaac Lab 3.x and 2.x differ in the task module and name, the quaternion order, and the type of asset data.
 try:
@@ -304,7 +309,24 @@ def hold(secs, lower=(0.0, 0.0, 0.0)):
     hands(arms["l"], secs, lower)
 
 
+LEVEL = {"on": False}
+
+
+def level():
+    """Keep the held box level: it slowly rotates between the palms as the robot walks; counter-rotate both wrists
+    (about 1 s time constant)."""
+    if LEVEL["on"]:
+        arms["pose"] = {**arms["pose"],
+                        "pitch": float(np.clip(arms["pose"]["pitch"] - LEVEL_GAIN * box_pitch(), -35.0, 35.0))}
+
+
+def relevel(secs=0.8):
+    """Rotate the wrists to cancel the box's current tilt."""
+    hands(tuple(arms["l"]), secs, pitch=float(np.clip(arms["pose"]["pitch"] - box_pitch(), -35.0, 35.0)))
+
+
 def walk_cmd(lower):
+    level()
     c = arms["l"]
     return action(tuple(c), (c[0], 2 * lat0 - c[1], c[2]), arms["pose"], lower)
 
@@ -420,7 +442,7 @@ with torch.inference_mode():
     phase("walk to packing table")
     walk_path(plan_path(pelvis()[0].cpu().numpy()[:2], pre_stand(L["pick"])), v_max=0.5)
     phase("square up")
-    hands((0.12, 0.26, 0.12), 0.8)  # retract the hands for the approach
+    hands(PARK, 0.8)  # retract the hands for the approach
     stand_pick = (*(box_centre()[:2] - STAND_DIST * fwd(L["pick"][2])), L["pick"][2])
     approach(stand_pick)
     square_up(stand_pick, timeout=4.0)  # the table frame stops the robot short; the grasp uses the measured box pose
@@ -456,6 +478,8 @@ with torch.inference_mode():
     hands((wf - 0.03, lat0 + W - SQUEEZE, wz + 0.12), 1.2)
     hands((CARRY[0], lat0 + W - SQUEEZE, CARRY[1]), 1.5)
     print(f"[carry]   box pitch after lift: {box_pitch():+.1f} deg", flush=True)
+    relevel()
+    LEVEL["on"] = True
     grip_report("lifted")
     phase("step back")
     hold(1.6, lower=(-0.3, 0.0, 0.0))
@@ -469,6 +493,9 @@ with torch.inference_mode():
     square_up(stand_drop, timeout=5.0)
 
     phase("place")
+    relevel()
+    LEVEL["on"] = False
+    print(f"[carry]   box pitch before placing: {box_pitch():+.1f} deg", flush=True)
     grip_report("at the drop table")
     # Closed-loop placement on the measured box position: the box is moved forward until its near face is
     # PLACE_MIN_IN past the table edge (stepping forward when the wrist target would exceed WRIST_REACH), then
@@ -497,10 +524,10 @@ with torch.inference_mode():
     # Release: open the hands, move them outward with the wrists yawed outward so the fingers clear the box,
     # retract past the box's near face, step back, and return the arms to the rest pose.
     hands(tuple(arms["l"]), 0.5, curl=0.0, thumb=0.0)
-    hands((arms["l"][0], arms["l"][1] + 0.15, arms["l"][2]), 1.0, yaw=30.0)
+    hands((arms["l"][0], arms["l"][1] + RELEASE_OUT, arms["l"][2]), 1.0, yaw=30.0)
     b = to_body(box_centre())
     print(f"[carry]   released: box centre {b[0]:.2f} m ahead, z={box_centre()[2]:.3f}", flush=True)
-    hands((0.05, arms["l"][1], arms["l"][2] + 0.05), 1.0)
+    hands(PARK, 1.0, yaw=0.0)  # clear of the box's near face, in a pose the arms reach without the waist
     phase("step back")
     hold(1.5, lower=(-0.25, 0.0, 0.0))
     lat0 = 0.0

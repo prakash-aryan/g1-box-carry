@@ -9,20 +9,24 @@ Pick-and-place of a box by a Unitree G1 humanoid with Inspire five-finger hands 
 | Component | Implementation |
 |---|---|
 | Locomotion | Pretrained "Agile" RL locomotion policy of the Isaac Lab G1 loco-manipulation task, commanded with forward and lateral velocity and yaw rate |
-| Arms | Isaac Lab Pink IK controller (Pinocchio, Pink), tracking scripted wrist poses in a gravity-aligned body frame |
+| Arms | Isaac Lab Pink IK controller (Pinocchio, Pink), tracking scripted wrist poses in a gravity-aligned body frame. The IK also drives the waist, so every wrist target is kept within the arms' reach and the torso stays upright |
 | Hands | Inspire hands in place of the task's Dex3-1; joint targets from the six actuated DoF per hand, with mimic joints set by their couplings |
-| Grasp | Friction grasp between the palms, without attachment. A box beyond the reach for a centred grasp is slid towards the robot and grasped again. Placement is closed-loop on the measured box position |
+| Grasp | Friction grasp between the palms, without attachment. A box beyond the reach for a centred grasp is slid towards the robot and grasped again. While walking, the wrists counter-rotate to keep the box level. Placement is closed-loop on the measured box position |
 | Navigation | Occupancy grid from the scene's mesh faces, A* path planning, straight-line walking with lateral correction |
 
 The task sequence is scripted and uses ground-truth simulator state for the robot and box poses; no perception is involved.
 
-## Files
+## Repository layout
 
-- `carry_box.py`: environment configuration, walking controllers, and the pick, transport and place sequence
-- `g1_hands.py`: Inspire hand integration (floating-base override, IK URDF and frame names) and hand joint targets
-- `nav_planning.py`: occupancy grid, A* and path smoothing
-- `scene_utils.py`: USD override layers (rigid box with friction, warehouse floor colliders) and occupancy map construction
-- `fetch_assets.sh`: download of the SimReady warehouse or of the box asset only
+```
+g1_box_carry/
+  g1_hands.py        Inspire hand integration (floating-base override, IK URDF and frame names) and hand joint targets
+  nav_planning.py    occupancy grid, A* and path smoothing
+  scene_utils.py     USD override layers (rigid box with friction, warehouse floor colliders), occupancy map
+scripts/
+  carry_box.py       environment configuration, walking controllers, and the pick, transport and place sequence
+  fetch_assets.sh    download of the SimReady warehouse or of the box asset only
+```
 
 ## Requirements
 
@@ -42,11 +46,11 @@ git clone https://github.com/prakash-aryan/g1-box-carry.git
 cd g1-box-carry
 export OMNI_KIT_ACCEPT_EULA=YES
 
-./fetch_assets.sh box                                           # box asset only (40 MB)
-~/IsaacLab/.venv/bin/python carry_box.py --scene lab
+scripts/fetch_assets.sh box                                     # box asset only (40 MB)
+~/IsaacLab/.venv/bin/python scripts/carry_box.py --scene lab
 
-./fetch_assets.sh                                               # full warehouse (~14 GB)
-~/IsaacLab/.venv/bin/python carry_box.py --scene warehouse
+scripts/fetch_assets.sh                                         # full warehouse (~14 GB)
+~/IsaacLab/.venv/bin/python scripts/carry_box.py --scene warehouse
 ```
 
 `--headless` runs the simulation without the GUI. If a numpy installation in `~/.local` shadows the one in the Isaac Lab environment, set `PYTHONNOUSERSITE=1`.
